@@ -284,7 +284,7 @@ class RXESWorkflow:
             raise ValueError(f"No data points in range {energy_range}")
         
         # Integrate using trapezoidal rule
-        area = np.trapz(xes_intensity[mask], xes_energy[mask])
+        area = np.trapezoid(xes_intensity[mask], xes_energy[mask])
         if area <= 0:
             raise ValueError(f"Invalid area: {area}")
         

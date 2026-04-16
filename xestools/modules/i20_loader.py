@@ -196,12 +196,13 @@ def xes_from_nxs(
         return reduce_to_1d(energy, inten)
 
 
-def xes_from_ascii(path: str) -> Tuple[np.ndarray, np.ndarray]:
+def xes_from_ascii(path: str, channel: str = "upper") -> Tuple[np.ndarray, np.ndarray]:
     """
     Load 1D XES from ASCII file.
-    
-    Supports both:
+
+    Supports:
     - I20 beamline format (.dat) - multi-column with header
+    - KaKb dual-channel format - returns the requested channel (upper/lower)
     - Simple 2-column format - energy, intensity
     """
     # Try I20 format first
@@ -211,10 +212,18 @@ def xes_from_ascii(path: str) -> Tuple[np.ndarray, np.ndarray]:
             scan = Scan()
             snum = add_scan_from_i20_ascii(scan, path)
             entry = scan[snum]
+            # KaKb dual-channel: return the requested channel
+            if entry.get('channel') == 'both':
+                x = entry.get(f'energy_{channel}')
+                y = entry.get(f'intensity_{channel}')
+                if x is not None and y is not None:
+                    ok = np.isfinite(x) & np.isfinite(y)
+                    return x[ok], y[ok]
+                # Fallback to combined if requested channel is missing
             return entry['energy'], entry['intensity']
     except Exception:
         pass
-    
+
     # Fallback: simple 2-column format
     data = np.genfromtxt(path, comments="#", delimiter=None, dtype=float)
     data = np.atleast_2d(data)
@@ -255,7 +264,7 @@ def xes_from_path(
     ext = os.path.splitext(path)[1].lower()
     if ext == ".nxs":
         return xes_from_nxs(path, channel=channel, type=type)
-    return xes_from_ascii(path)
+    return xes_from_ascii(path, channel=channel)
 
 
 def available_channels(entry: dict) -> list:

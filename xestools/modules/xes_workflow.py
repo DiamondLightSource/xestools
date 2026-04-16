@@ -384,13 +384,13 @@ class XESWorkflow:
         ref_mask = (ref_x >= energy_range[0]) & (ref_x <= energy_range[1])
         if not ref_mask.any():
             raise ValueError("No reference data in energy range")
-        ref_area = np.trapz(ref_y[ref_mask], ref_x[ref_mask])
+        ref_area = np.trapezoid(ref_y[ref_mask], ref_x[ref_mask])
         
         # Compute area of spectrum in range
         spec_mask = (energy >= energy_range[0]) & (energy <= energy_range[1])
         if not spec_mask.any():
             raise ValueError("No spectrum data in energy range")
-        spec_area = np.trapz(intensity[spec_mask], energy[spec_mask])
+        spec_area = np.trapezoid(intensity[spec_mask], energy[spec_mask])
         
         if spec_area <= 0:
             raise ValueError("Invalid spectrum area")

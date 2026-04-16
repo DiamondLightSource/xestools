@@ -187,7 +187,7 @@ class NormaliseDialog(QDialog):
         mask = (self.x >= xlo) & (self.x <= xhi)
         if not np.any(mask):
             return None
-        return float(np.trapz(self.y[mask], self.x[mask]))
+        return float(np.trapezoid(self.y[mask], self.x[mask]))
 
     def _apply_manual_range(self, xlo: float, xhi: float, update_spins: bool = True):
         if not np.isfinite(xlo) or not np.isfinite(xhi):
