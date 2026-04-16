@@ -332,18 +332,20 @@ def parse_i20_ascii_metadata(path: str) -> dict:
     # Analyze command to determine scan type
     if metadata['command']:
         cmd = metadata['command']
-        
+
+        # bragg1WithOffset with start/stop/step = scanning incident energy (RXES outer axis)
         has_bragg_scan = 'bragg1WithOffset' in cmd and \
                         bool(re.search(r'bragg1WithOffset\s+[\d.]+\s+[\d.]+\s+[\d.]+', cmd))
-        has_emission_scan = bool(re.search(r'XESEnergy(?:Upper|Lower)\s+\[Range', cmd))
-        
+        # XESEnergyUpper/Lower [Range... or XESEnergyGroup [Range... = scanning emission energy
+        has_emission_scan = bool(re.search(r'XESEnergy(?:Upper|Lower|Group)\s+\[', cmd))
+
         if has_bragg_scan and has_emission_scan:
             metadata['scan_type'] = 'RXES'
-            
+
             bragg_pos = cmd.find('bragg1WithOffset')
-            emission_match = re.search(r'XESEnergy(?:Upper|Lower)', cmd)
+            emission_match = re.search(r'XESEnergy(?:Upper|Lower|Group)', cmd)
             emission_pos = emission_match.start() if emission_match else float('inf')
-            
+
             if bragg_pos < emission_pos:
                 metadata['outer_axis'] = 'incident'
                 metadata['inner_axis'] = 'emission'
@@ -359,11 +361,16 @@ def parse_i20_ascii_metadata(path: str) -> dict:
     
     # Detect channel from column names
     if metadata['columns']:
-        if 'XESEnergyUpper' in metadata['columns']:
+        has_upper = 'XESEnergyUpper' in metadata['columns']
+        has_lower = 'XESEnergyLower' in metadata['columns']
+        if has_upper and has_lower:
+            metadata['channel'] = 'both'
+            metadata['detector'] = 'medipix1'  # primary (upper); lower = medipix2
+        elif has_upper:
             metadata['channel'] = 'upper'
             if 'FFI1_medipix1' in metadata['columns']:
                 metadata['detector'] = 'medipix1'
-        elif 'XESEnergyLower' in metadata['columns']:
+        elif has_lower:
             metadata['channel'] = 'lower'
             if 'FFI1_medipix2' in metadata['columns']:
                 metadata['detector'] = 'medipix2'
@@ -414,36 +421,86 @@ def add_scan_from_i20_ascii(
     
     # Extract columns
     bragg = data[:, 0]  # Energy column
-    
+
+    try:
+        monitor_col_idx = metadata['columns'].index('I1')
+        monitor = data[:, monitor_col_idx]
+    except ValueError:
+        monitor = None
+
+    if scan_number is None:
+        scan_number = scan.next_index()
+
+    # KaKb dual-channel XES: both upper and lower in the same file
+    if metadata['channel'] == 'both':
+        cols = metadata['columns']
+
+        def _col(name):
+            try:
+                return data[:, cols.index(name)]
+            except ValueError:
+                return None
+
+        emission_upper = _col('XESEnergyUpper')
+        intensity_upper = _col('FFI1_medipix1')
+        emission_lower = _col('XESEnergyLower')
+        intensity_lower = _col('FFI1_medipix2')
+
+        # Build combined (Ka + Kb) spectrum sorted by energy
+        parts_e, parts_i = [], []
+        if emission_upper is not None and intensity_upper is not None:
+            ok = np.isfinite(emission_upper) & np.isfinite(intensity_upper)
+            parts_e.append(emission_upper[ok])
+            parts_i.append(intensity_upper[ok])
+        if emission_lower is not None and intensity_lower is not None:
+            ok = np.isfinite(emission_lower) & np.isfinite(intensity_lower)
+            parts_e.append(emission_lower[ok])
+            parts_i.append(intensity_lower[ok])
+
+        if not parts_e:
+            raise ValueError("No valid upper or lower channel data found in KaKb file")
+
+        energy_combined = np.concatenate(parts_e)
+        intensity_combined = np.concatenate(parts_i)
+        order = np.argsort(energy_combined)
+        energy_combined = energy_combined[order]
+        intensity_combined = intensity_combined[order]
+
+        scan.add_scan(scan_number, {
+            'energy': energy_combined,
+            'intensity': intensity_combined,
+            'energy_upper': parts_e[0] if len(parts_e) > 0 else None,
+            'intensity_upper': parts_i[0] if len(parts_i) > 0 else None,
+            'energy_lower': parts_e[1] if len(parts_e) > 1 else None,
+            'intensity_lower': parts_i[1] if len(parts_i) > 1 else None,
+            'monitor': monitor,
+            'path': path,
+            'scan_type': 'KaKbXES',
+            'channel': 'both',
+            'source': 'ascii',
+        })
+        return scan_number
+
     emission_col_name = f"XESEnergy{metadata['channel'].capitalize()}"
     try:
         emission_col_idx = metadata['columns'].index(emission_col_name)
     except ValueError:
         raise ValueError(f"Column {emission_col_name} not found in {metadata['columns']}")
     emission = data[:, emission_col_idx]
-    
+
     intensity_col_name = f"FFI1_{metadata['detector']}"
     try:
         intensity_col_idx = metadata['columns'].index(intensity_col_name)
     except ValueError:
         raise ValueError(f"Column {intensity_col_name} not found in {metadata['columns']}")
     intensity = data[:, intensity_col_idx]
-    
-    try:
-        monitor_col_idx = metadata['columns'].index('I1')
-        monitor = data[:, monitor_col_idx]
-    except ValueError:
-        monitor = None
-    
-    if scan_number is None:
-        scan_number = scan.next_index()
-    
+
     # Validate scan type
     validated_scan_type = validate_scan_type_from_data(
         bragg, emission, metadata['scan_type'], threshold=0.5
     )
     metadata['scan_type'] = validated_scan_type
-    
+
     # Process based on scan type
     if metadata['scan_type'] == 'XES':
         ok = np.isfinite(emission) & np.isfinite(intensity)
