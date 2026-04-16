@@ -768,24 +768,71 @@ class MainWindow(QMainWindow):
                             "label": os.path.basename(path),
                         }
                     else:
-                        # ASCII: load once; channel notion not applicable
-                        x, y = i20_loader.xes_from_ascii(path)
-                        order = np.argsort(x)
-                        x = np.asarray(x)[order]; y = np.asarray(y)[order]
-                        ok = np.isfinite(x) & np.isfinite(y)
-                        x, y = x[ok], y[ok]
-                        if x.size == 0:
-                            raise ValueError("Empty/invalid data after sanitizing")
+                        # ASCII: check for dual-channel KaKb file first
+                        try:
+                            meta = i20_loader.parse_i20_ascii_metadata(path)
+                            is_kakb = (meta.get('channel') == 'both')
+                        except Exception:
+                            is_kakb = False
 
-                        item = {
-                            "path": path,
-                            "kind": "ascii",
-                            "available_channels": [],       # none; not channel-switchable
-                            "channel": None,
-                            "x": x,
-                            "y": y,
-                            "label": os.path.basename(path),
-                        }
+                        if is_kakb:
+                            # Load both channels separately
+                            tmp_scan = Scan()
+                            snum = i20_loader.add_scan_from_i20_ascii(tmp_scan, path)
+                            entry = tmp_scan[snum]
+
+                            eu = entry.get('energy_upper')
+                            iu = entry.get('intensity_upper')
+                            el = entry.get('energy_lower')
+                            il = entry.get('intensity_lower')
+
+                            # Pick initial channel from UI
+                            if ui_channel == 'upper' and eu is not None and iu is not None:
+                                x, y, ch0 = eu.copy(), iu.copy(), 'upper'
+                            elif el is not None and il is not None:
+                                x, y, ch0 = el.copy(), il.copy(), 'lower'
+                            else:
+                                x, y, ch0 = entry['energy'], entry['intensity'], None
+
+                            order = np.argsort(x)
+                            x = np.asarray(x)[order]; y = np.asarray(y)[order]
+                            ok = np.isfinite(x) & np.isfinite(y)
+                            x, y = x[ok], y[ok]
+                            if x.size == 0:
+                                raise ValueError("Empty/invalid data after sanitizing")
+
+                            item = {
+                                "path": path,
+                                "kind": "ascii",
+                                "available_channels": ['upper', 'lower'],
+                                "channel": ch0,
+                                "x": x,
+                                "y": y,
+                                "x_upper": eu,
+                                "y_upper": iu,
+                                "x_lower": el,
+                                "y_lower": il,
+                                "label": os.path.basename(path),
+                            }
+                        else:
+                            # Single-channel ASCII
+                            x, y = i20_loader.xes_from_ascii(path)
+                            order = np.argsort(x)
+                            x = np.asarray(x)[order]; y = np.asarray(y)[order]
+                            ok = np.isfinite(x) & np.isfinite(y)
+                            x, y = x[ok], y[ok]
+                            if x.size == 0:
+                                raise ValueError("Empty/invalid data after sanitizing")
+
+                            item = {
+                                "path": path,
+                                "kind": "ascii",
+                                "available_channels": [],       # none; not channel-switchable
+                                "channel": None,
+                                "x": x,
+                                "y": y,
+                                "label": os.path.basename(path),
+                            }
 
                     self._xes_items.append(item)
                     self.xes_panel.add_item(item["label"], checked=True)
@@ -856,11 +903,25 @@ class MainWindow(QMainWindow):
         errors = []
 
         for idx, it in enumerate(self._xes_items):
-            if it.get("kind") != "nxs":
-                continue  # ASCII: nothing to switch
             avail = it.get("available_channels", [])
             if new_channel not in avail:
                 continue  # this file doesn't have that channel
+
+            if it.get("kind") == "ascii":
+                # Dual-channel ASCII (KaKb): switch using stored per-channel arrays
+                x_new = it.get(f"x_{new_channel}")
+                y_new = it.get(f"y_{new_channel}")
+                if x_new is None or y_new is None:
+                    continue
+                order = np.argsort(x_new)
+                x_new = np.asarray(x_new)[order]; y_new = np.asarray(y_new)[order]
+                ok = np.isfinite(x_new) & np.isfinite(y_new)
+                x_new, y_new = x_new[ok], y_new[ok]
+                self._xes_items[idx] = {**it, "x": x_new, "y": y_new, "channel": new_channel}
+                changed = True
+                continue
+
+            # NeXus: reload from scan entry
             try:
                 entry = self.scan.get(it["scan_number"], None)
                 if entry is None:
@@ -1743,15 +1804,9 @@ class MainWindow(QMainWindow):
         - If only 'lower' is available, select Lower and disable Upper.
         - If both (or none, e.g. only ASCII items), enable both and leave selection as-is.
         """
-        # Consider only NeXus items (ASCII has no channel concept)
-        has_upper = any(
-            it.get("kind") == "nxs" and "upper" in it.get("available_channels", [])
-            for it in self._xes_items
-        )
-        has_lower = any(
-            it.get("kind") == "nxs" and "lower" in it.get("available_channels", [])
-            for it in self._xes_items
-        )
+        # Check all items (NeXus and dual-channel ASCII like KaKb)
+        has_upper = any("upper" in it.get("available_channels", []) for it in self._xes_items)
+        has_lower = any("lower" in it.get("available_channels", []) for it in self._xes_items)
 
         # Default: enable both (e.g. only ASCII loaded or both channels present)
         enable_upper = True
