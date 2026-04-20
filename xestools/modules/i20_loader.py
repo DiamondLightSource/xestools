@@ -346,7 +346,14 @@ def parse_i20_ascii_metadata(path: str) -> dict:
         has_bragg_scan = 'bragg1WithOffset' in cmd and \
                         bool(re.search(r'bragg1WithOffset\s+[\d.]+\s+[\d.]+\s+[\d.]+', cmd))
         # XESEnergyUpper/Lower [Range... or XESEnergyGroup [Range... = scanning emission energy
-        has_emission_scan = bool(re.search(r'XESEnergy(?:Upper|Lower|Group)\s+\[', cmd))
+        # Also: ScanPositionProviderFromList with XESEnergyUpper/Lower as a scannable (region scan)
+        has_emission_scan = (
+            bool(re.search(r'XESEnergy(?:Upper|Lower|Group)\s+\[', cmd))
+            or (
+                'ScanPositionProviderFromList' in cmd
+                and bool(re.search(r'\bXESEnergy(?:Upper|Lower|Group)\b', cmd))
+            )
+        )
 
         if has_bragg_scan and has_emission_scan:
             metadata['scan_type'] = 'RXES'
